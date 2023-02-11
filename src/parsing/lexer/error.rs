@@ -8,4 +8,6 @@ pub struct Error {
 pub enum Kind {
     InvalidUtf8,
     UnexpectedEoi,
+
+    InvalidRawIdent,
 }

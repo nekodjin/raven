@@ -3,10 +3,11 @@ use std::io::Read;
 use error::*;
 
 use super::token::*;
+use crate::interning::*;
 
 mod error;
 
-type Result<T, E = Error> = ::std::result::Result<T, E>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub struct Lexer<Source>
 where
@@ -30,15 +31,14 @@ where
         self._nx_tok()
     }
 
-    // TODO: remove `clone` use once Token impls Copy
     pub fn peek_token(&mut self) -> Result<Token> {
-        if let Some(token) = self._nx_tok.clone() {
+        if let Some(token) = self._nx_tok {
             return Ok(token);
         }
 
         let token = self._nx_tok()?;
 
-        self._nx_tok = Some(token.clone());
+        self._nx_tok = Some(token);
 
         Ok(token)
     }
@@ -95,24 +95,42 @@ where
             });
         }
 
-        if fst_char == '_' || fst_char.is_ascii_alphabetic() {
-            let mut buf = String::from(fst_char);
+        let lex_ident = |lexer: &mut Lexer<Source>, char| {
+            let mut buf = StdString::from(char);
 
-            while self
+            while lexer
                 .peek_char()
                 .map(|c| c == '_' || c.is_ascii_alphanumeric())
                 .unwrap_or(false)
             {
                 buf.push(
-                    self.next_char()
+                    lexer
+                        .next_char()
                         .expect("no next char after peek_char was Ok(..)"),
                 );
             }
 
-            return Ok(Token {
-                span: Span::new(start, self.pos),
-                data: TokenData::Ident(buf),
-            });
+            Ok(Token {
+                span: Span::new(start, lexer.pos),
+                data: TokenData::Ident(String::from(&*buf)),
+            })
+        };
+
+        if fst_char == '#' {
+            let next_char = self.next_char()?;
+
+            if next_char != '_' && !next_char.is_ascii_alphabetic() {
+                return Err(Error {
+                    kind: Kind::InvalidRawIdent,
+                    span: Span::new(start, self.pos),
+                });
+            }
+
+            return lex_ident(self, next_char);
+        }
+
+        if fst_char == '_' || fst_char.is_ascii_alphabetic() {
+            return lex_ident(self, fst_char);
         }
 
         todo!();
@@ -209,7 +227,7 @@ where
 
         let save = bytes.clone();
 
-        let str = String::from_utf8(bytes).map_err(|_| invalid_utf8_err)?;
+        let str = StdString::from_utf8(bytes).map_err(|_| invalid_utf8_err)?;
 
         if str.chars().count() != 1 {
             panic!("consumed codepoint {:?} incorrectly @{}", save, self.pos);
