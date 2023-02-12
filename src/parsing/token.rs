@@ -9,6 +9,7 @@ pub struct Token {
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
+// TODO: add all tokens
 pub enum TokenData {
     LParen,
     RParen,
@@ -17,9 +18,11 @@ pub enum TokenData {
     LBrace,
     RBrace,
 
-    Ident(String),
+    KwTrue,
+    KwFalse,
 
-    // TODO: add all tokens
+    Ident { raw: bool, val: String },
+    IntLit(BigInt),
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]

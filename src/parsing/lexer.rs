@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use error::*;
+use num::Num;
 
 use super::token::*;
 use crate::interning::*;
@@ -23,6 +24,15 @@ impl<Source> Lexer<Source>
 where
     Source: Read,
 {
+    pub fn new(source: Source) -> Self {
+        Lexer {
+            source,
+            pos: Position::new(1, 0),
+            _nx_tok: None,
+            _nx_chr: None,
+        }
+    }
+
     pub fn next_token(&mut self) -> Result<Token> {
         if let Some(token) = self._nx_tok.take() {
             return Ok(token);
@@ -95,7 +105,7 @@ where
             });
         }
 
-        let lex_ident = |lexer: &mut Lexer<Source>, char| {
+        let lex_ident = |lexer: &mut Lexer<Source>, char, raw| {
             let mut buf = StdString::from(char);
 
             while lexer
@@ -110,9 +120,32 @@ where
                 );
             }
 
+            let val = &*buf;
+
+            let data = if raw {
+                TokenData::Ident {
+                    raw,
+                    val: String::from(val),
+                }
+            }
+            else {
+                use TokenData::*;
+
+                match val {
+                    "true" => KwTrue,
+                    "false" => KwFalse,
+                    _ => {
+                        Ident {
+                            raw,
+                            val: String::from(val),
+                        }
+                    },
+                }
+            };
+
             Ok(Token {
                 span: Span::new(start, lexer.pos),
-                data: TokenData::Ident(String::from(&*buf)),
+                data,
             })
         };
 
@@ -126,11 +159,107 @@ where
                 });
             }
 
-            return lex_ident(self, next_char);
+            return lex_ident(self, next_char, true);
         }
 
         if fst_char == '_' || fst_char.is_ascii_alphabetic() {
-            return lex_ident(self, fst_char);
+            return lex_ident(self, fst_char, false);
+        }
+
+        let lex_prefixed_int = |lexer: &mut Lexer<Source>, radix| {
+            let mut buf = StdString::new();
+
+            while lexer
+                .peek_char()
+                .map(|c| c.is_ascii_hexdigit())
+                .unwrap_or(false)
+            {
+                buf.push(
+                    lexer
+                        .next_char()
+                        .expect("no next char after peek_char was Ok(..)"),
+                );
+            }
+
+            let buf = buf;
+
+            if buf.is_empty() {
+                return Err(Error {
+                    kind: Kind::EmptyPrefixedInt,
+                    span: Span::new(start, lexer.pos),
+                });
+            }
+
+            match radix {
+                2 | 8 | 10 | 16 => {},
+                _ => panic!("invalid radix passed: {radix}"),
+            }
+
+            StdBigInt::from_str_radix(&buf, radix)
+                .map(|val| {
+                    Token {
+                        span: Span::new(start, lexer.pos),
+                        data: TokenData::IntLit(BigInt::from(val)),
+                    }
+                })
+                .map_err(|_| {
+                    Error {
+                        kind: Kind::InvalidPrefixedInt { radix },
+                        span: Span::new(start, lexer.pos),
+                    }
+                })
+        };
+
+        let lex_decimal_int = |lexer: &mut Lexer<Source>, fst_char| {
+            let mut buf = StdString::from(fst_char);
+
+            while lexer
+                .peek_char()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+            {
+                buf.push(
+                    lexer
+                        .next_char()
+                        .expect("no next char after peek_char was Ok(..)"),
+                );
+            }
+
+            let buf = buf;
+
+            match buf.parse().map(|val: StdBigInt| {
+                Token {
+                    span: Span::new(start, lexer.pos),
+                    data: TokenData::IntLit(BigInt::from(val)),
+                }
+            }) {
+                Ok(token) => Ok(token),
+                Err(_) => panic!("decimal literal failed to parse"),
+            }
+        };
+
+        if fst_char == '0' {
+            return match self.peek_char() {
+                Ok('b') => lex_prefixed_int(self, 2),
+                Ok('o') => lex_prefixed_int(self, 8),
+                Ok('d') => lex_prefixed_int(self, 10),
+                Ok('x') => lex_prefixed_int(self, 16),
+                Ok(digit) if digit.is_ascii_digit() => {
+                    lex_decimal_int(self, '0')
+                },
+                _ => {
+                    Ok(Token {
+                        span: Span::point(start),
+                        data: TokenData::IntLit(BigInt::from(StdBigInt::from(
+                            0,
+                        ))),
+                    })
+                },
+            };
+        }
+
+        if fst_char.is_ascii_digit() {
+            return lex_decimal_int(self, fst_char);
         }
 
         todo!();
@@ -184,7 +313,10 @@ where
                 panic!("unexpected error: {err}");
             }
 
-            Err(invalid_utf8_err)
+            Err(Error {
+                kind: Kind::UnexpectedEoi,
+                span: Span::point(self.pos),
+            })
         };
 
         let fst_byte = get_byte()?;
@@ -234,5 +366,22 @@ where
         }
 
         Ok(str.chars().next().expect("non-empty str had no first char"))
+    }
+}
+
+impl<Source> Iterator for Lexer<Source>
+where
+    Source: Read,
+{
+    type Item = Result<Token>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_token() {
+            Err(Error {
+                kind: Kind::UnexpectedEoi,
+                ..
+            }) => None,
+            next => Some(next),
+        }
     }
 }
